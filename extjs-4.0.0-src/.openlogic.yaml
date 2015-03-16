@@ -1,0 +1,18 @@
+--- 
+name: Ext JS 4.0.0 Source
+platform_id: all
+platform_version: all
+distribution_file_uuid_string: openlogic-extjs-4.0.0-all-src-1
+platform_vendor: all
+description: Ext JS 4.0.0 Source
+platform_arch: all
+distribution_file_uuid: ac48664c7249f93753de84b2f78915c84ebb22f425eb6638561113b088fbd6e3
+distribution_version: 1
+distribution_flavor: ""
+distribution_raw_file: 4.0.0/ext-4.0.0-gpl.zip
+notify: "yes"
+package_version: 4.0.0
+package_id: extjs
+release_date: "2011-06-30"
+distribution_notes: ""
+distribution_type: src

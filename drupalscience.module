@@ -1,0 +1,1084 @@
+<?php
+
+global $conn;
+global $db;
+global $collection;
+global $collectionCache;
+global $collectionforResults;
+
+function drupalscience_initMongo()
+{
+    global $conn;
+    global $db;
+    global $collection;
+    global $collectionCache;
+    global $collectionforResults;
+    try {
+        // open connection to MongoDB server
+        $conn = new Mongo('localhost');
+
+        // access database
+        $db = $conn->sodtest;
+
+        // access collection
+        $collection = $db->items;
+        $collectionCache = $db->cache;
+        $collectionforResults = $db->results;
+        $collectionCache->remove();
+
+    } catch (MongoConnectionException $e) {
+        die('Error connecting to MongoDB server');
+    } catch (MongoException $e) {
+        die('Error: ' . $e->getMessage());
+    }
+}
+
+// Implementation of hook_menu function.
+function drupalscience_menu()
+{
+
+    $items = array();
+    // Normal menu item for triggering the scienceof drupal module.
+    $items['drupalscience'] = array(
+        'page callback' => 'drupalscience_page_default',
+        'access arguments' => array('access content'),
+        'type' => MENU_NORMAL_ITEM,
+    );
+    $items['addimage'] = array(
+        'type' => MENU_CALLBACK,
+        'page callback' => 'drupalscience_addimage',
+        'access arguments' => array('access content'),
+    );
+
+    $items['getnodeimages'] = array(
+        'type' => MENU_CALLBACK,
+        'page callback' => 'drupalscience_getimages',
+        'access arguments' => array('access content'),
+    );
+    $items['getnodes'] = array(
+        'type' => MENU_CALLBACK,
+        'page callback' => 'drupalscience_getnodes',
+        'access arguments' => array('access content'),
+    );
+
+    $items['gethistresult'] = array(
+        'type' => MENU_CALLBACK,
+        'page callback' => 'drupalscience_gethistresult',
+        'access arguments' => array('access content'),
+    );
+
+    $items['getservice'] = array(
+        'type' => MENU_CALLBACK,
+        'page callback' => 'drupalscience_getservice',
+        'access arguments' => array('access content'),
+    );
+    $items['getjsonfromservice'] = array(
+        'type' => MENU_CALLBACK,
+        'page callback' => 'drupalscience_getjsonfromservice',
+        'access arguments' => array('access content'),
+    );
+    $items['getdatabasedirstructure'] = array(
+        'title' => 'Get Database Dir Structure',
+        'description' => 'Get Database Dir Structure',
+        'page callback' => 'drupalscience_getDirStructureFromDatabase',
+        'access callback' => 'user_access',
+        'access arguments' => array('view karmalite'),
+        'type' => MENU_CALLBACK
+    );
+
+    $items['parseFileName'] = array(
+        'type' => MENU_CALLBACK,
+        'page callback' => 'drupalscience_parseFileName',
+        'access arguments' => array('access content'),
+    );
+    $items['getsearch'] = array(
+        'type' => MENU_CALLBACK,
+        'page callback' => 'drupalscience_getsearch',
+        'access arguments' => array('access content'),
+    );
+    $items['savenode'] = array(
+        'type' => MENU_CALLBACK,
+        'page callback' => 'drupalscience_savenode',
+        'access arguments' => array('access content'),
+    );
+    $items['getimages'] = array(
+        'type' => MENU_CALLBACK,
+        'page callback' => 'drupalscience_getimages_json',
+        'access arguments' => array('access content'),
+    );
+
+    return $items;
+}
+
+function drupalscience_page_default()
+{
+    return drupal_get_form('drupalscience_form');
+}
+
+function drupalscience_addimage()
+{
+    $ftpserver = 'ghrc.nsstc.nasa.gov';
+    $conn_id = ftp_connect($ftpserver) or die("Couldn't connect to $ftpserver");
+    ftp_login($conn_id, 'anonymous', '');
+    ftp_chdir($conn_id, 'pub');
+    getDir('browse', $conn_id);
+    getDirstructure('browse', $conn_id);
+
+    ftp_close($conn_id);
+}
+
+function drupalscience_remoteFileExists($url)
+{
+    $curl = curl_init($url);
+
+    //don't fetch the actual page, you only want to check the connection is ok
+    curl_setopt($curl, CURLOPT_NOBODY, true);
+
+    //do request
+    $result = curl_exec($curl);
+
+    $ret = false;
+
+    //if request did not fail
+    if ($result !== false) {
+        //if request was ok, check response code
+        $statusCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+
+        if ($statusCode == 200) {
+            $ret = true;
+        }
+    }
+
+    curl_close($curl);
+
+    return $ret;
+}
+
+function drupalscience_copyftp($sourceFile, $destinationFile)
+{
+
+    $newSourceFile = str_replace("ftp://ghrc.nsstc.nasa.gov", "http://himal.itsc.uah.edu", $sourceFile);
+    if (drupalscience_remoteFileExists($newSourceFile)) {
+        copy($newSourceFile, $destinationFile);
+    } else {
+        $ftpserver = 'ghrc.nsstc.nasa.gov';
+        $conn_id = ftp_connect($ftpserver) or die("Couldn't connect to $ftpserver");
+        $login_result = ftp_login($conn_id, 'anonymous', '');
+
+        $sourceFile = str_replace("ftp://ghrc.nsstc.nasa.gov", "", $sourceFile);
+        if (ftp_get($conn_id, $destinationFile, $sourceFile, FTP_BINARY)) {
+            //   echo "Successfully written to $destinationFile\n";
+        } else {
+            //   echo "There was a problem\n";
+            die("Couldn't save file $sourceFile to $destinationFile");
+        }
+
+        ftp_close($conn_id);
+    }
+}
+
+function drupalscience_getsearch()
+{
+
+    $url = urldecode($_GET['url']);
+    $index = $_GET['index'];
+    //echo $url;
+    $arr = array('url' => $url, 'index' => $index);
+
+    echo json_encode($arr);
+}
+
+function getDir($path, $conn_id)
+{
+    $types = array('jpg', 'gif', 'png');
+    $list = ftp_nlist($conn_id, $path);
+
+    foreach ($list as $file) {
+
+        if (substr($file, -1) == '.')
+            continue;
+
+        // check if $file is a directory or file		
+        $path_info = pathinfo($file);
+        if ($path_info['basename'] == 'doc')
+            continue;
+
+        if (array_key_exists('extension', $path_info)) {
+            if (in_array($path_info['extension'], $types)) {
+                if (!is_file($file)) {
+
+                    $filename = basename($file);
+                    $fileurl = 'ftp://ghrc.nsstc.nasa.gov/pub/' . $file;
+                    $contentType = "image_node";
+
+                    $result = db_select('node', 'n')->fields('n')
+                        ->condition('title', $filename)
+                        ->execute()
+                        ->fetchAssoc();
+
+                    if (!$result) {
+
+
+                        $url = explode("/", $file);
+                        $productname = $url[1];
+
+                        $satellite = $url[2];
+
+
+                        $filestr = explode('.', $filename);
+
+                        $channelstr = $filestr[1];
+                        $getc = explode("_", $channelstr);
+                        $c = $getc[1];
+                        if ($c == 'C') {
+                            $channel = substr($channelstr, -2);
+                        } else {
+                            $channel = 1;
+                        }
+
+
+                        $info = pathinfo($filename);
+                        $file_name = basename($filename, '.' . $info['extension']);
+                        $findme = '.';
+                        $pos = strpos($file_name, $findme);
+                        if ($pos) {
+                            $value = explode('.', $file_name);
+                            $firstvalue = $value[0];
+                            if ($firstvalue == 'mlab') {
+                                $datevalue = explode('.', $file_name);
+                                $getyear = $datevalue[3];
+                                $year = substr($getyear, -4);
+                                $startdate = $datevalue[4];
+                                $start = substr($startdate, 0, 3);
+                                $timestamp = mktime(0, 0, 0, 1, $start, $year);
+                                $timestamp;
+                                $actualdate = date('Y-m-d', $timestamp);
+                                $arrdate = explode('-', $actualdate);
+
+                                $year = $arrdate[0];
+                                $month = $arrdate[1];
+                                $day = $arrdate[2];
+                            } else if ($firstvalue == 'TRMM_LIS_BR') {
+                                $datevalue = explode('.', $file_name);
+                                $getyear = $datevalue[2];
+                                $year = substr($getyear, -4);
+                                $startdate = $datevalue[3];
+                                $start = substr($startdate, 0, 3);
+                                $timestamp = mktime(0, 0, 0, 1, $start, $year);
+                                $timestamp;
+                                $actualdate = date('Y-m-d', $timestamp);
+                                $arrdate = explode('-', $actualdate);
+                                $year = $arrdate[0];
+                                $month = $arrdate[1];
+                                $day = $arrdate[2];
+                            } else {
+                                $datevalue = explode('.', $filename);
+                                $getyear = $datevalue[0];
+                                $year = substr($getyear, -4);
+                                $startdate = $datevalue[1];
+                                $start = substr($startdate, 0, 3);
+                                $timestamp = mktime(0, 0, 0, 1, $start, $year);
+                                $timestamp;
+                                $actualdate = date('Y-m-d', $timestamp);
+                                $arrdate = explode('-', $actualdate);
+                                $year = $arrdate[0];
+                                $month = $arrdate[1];
+                                $day = $arrdate[2];
+                            }
+                        } else {
+
+                            $value = explode("_", $file_name);
+                            $firstvalue = $value[0];
+                            if ($firstvalue == 'ols') {
+                                $datevalue = explode('_', $file_name);
+                                $year = $datevalue[1];
+                                $month = $datevalue[2];
+                                $day = 0;
+                            } else if ($firstvalue == 'otd') {
+
+                                $datevalue = explode('_', $file_name);
+                                $year = $datevalue[2];
+                                $month = $datevalue[3];
+                                $day = 0;
+                            } else {
+                                $datevalue = explode('_', $file_name);
+                                $actualdate = $datevalue[2];
+                                $year = substr($actualdate, 0, 4);
+                                $month = substr($actualdate, -4, -2);
+                                $day = substr($actualdate, -2);
+                            }
+                        }
+                        $node = new stdClass();
+                        $node->type = 'image_node';
+                        node_object_prepare($node);
+
+                        $node->title = $filename;
+                        $node->language = LANGUAGE_NONE;
+                        $node->field_product_name[$node->language][0]['value'] = $productname;
+                        $node->field_satellite[$node->language][0]['value'] = $satellite;
+                        $node->field_imagelink[$node->language][0]['title'] = 'ftp://ghrc.nsstc.nasa.gov/pub/' . $file;
+                        $node->field_imagelink[$node->language][0]['url'] = 'ftp://ghrc.nsstc.nasa.gov/pub/' . $file;
+                        $node->field_year[$node->language][0]['value'] = $year;
+                        $node->field_month[$node->language][0]['value'] = $month;
+                        $node->field_day[$node->language][0]['value'] = $day;
+                        $node->field_channel[$node->language][0]['value'] = $channel;
+                        $node->field_filename[$node->language][0]['value'] = $filename;
+
+
+                        $path = 'content/programmatically_created_node_' . date('YmdHis');
+                        $node->path = array('alias' => $path);
+                        node_save($node);
+                    }
+                }
+            }
+            // }
+        } else
+            getDir($file, $conn_id);
+    }
+}
+
+function drupalscience_parseFileName($file)
+{
+
+
+    $filename = basename($file);
+
+
+    $count = array();
+    $info = pathinfo($filename);
+    $file_name = basename($filename, '.' . $info['extension']);
+    $findme = '.';
+    $pos = strpos($file_name, $findme);
+    if ($pos) {
+        $value = explode('.', $file_name);
+        $firstvalue = $value[0];
+        if ($firstvalue == 'mlab') {
+            $datevalue = explode('.', $file_name);
+            $getyear = $datevalue[3];
+            $year = substr($getyear, -4);
+            $startdate = $datevalue[4];
+            $start = substr($startdate, 0, 3);
+            $timestamp = mktime(0, 0, 0, 1, $start, $year);
+            $timestamp;
+            $actualdate = date('Y-m-d', $timestamp);
+            $arrdate = explode('-', $actualdate);
+
+            $year = $arrdate[0];
+            $month = $arrdate[1];
+            $day = $arrdate[2];
+        } else if ($firstvalue == 'TRMM_LIS_BR') {
+            $datevalue = explode('.', $file_name);
+            $getyear = $datevalue[2];
+            $year = substr($getyear, -4);
+            $startdate = $datevalue[3];
+            $start = substr($startdate, 0, 3);
+            $timestamp = mktime(0, 0, 0, 1, $start, $year);
+            $timestamp;
+            $actualdate = date('Y-m-d', $timestamp);
+            $arrdate = explode('-', $actualdate);
+            $year = $arrdate[0];
+            $month = $arrdate[1];
+            $day = $arrdate[2];
+        } else {
+            $datevalue = explode('.', $filename);
+            $getyear = $datevalue[0];
+            $year = substr($getyear, -4);
+            $startdate = $datevalue[1];
+            $start = substr($startdate, 0, 3);
+            $timestamp = mktime(0, 0, 0, 1, $start, $year);
+            $timestamp;
+            $actualdate = date('Y-m-d', $timestamp);
+            $arrdate = explode('-', $actualdate);
+
+            $year = $arrdate[0];
+            $month = $arrdate[1];
+            $day = $arrdate[2];
+        }
+    } else {
+
+        $value = explode("_", $file_name);
+        $firstvalue = $value[0];
+        if ($firstvalue == 'ols') {
+            $datevalue = explode('_', $file_name);
+            $year = $datevalue[1];
+            $month = $datevalue[2];
+            $day = 0;
+        } else if ($firstvalue == 'otd') {
+
+            $datevalue = explode('_', $file_name);
+            $year = $datevalue[2];
+            $month = $datevalue[3];
+            $day = 0;
+        } else {
+            $datevalue = explode('_', $file_name);
+            $actualdate = $datevalue[2];
+            $year = substr($actualdate, 0, 4);
+            $month = substr($actualdate, -4, -2);
+            $day = substr($actualdate, -2);
+        }
+    }
+    return array("year" => $year, "month" => $month, "day" => $day);
+}
+
+
+function drupalscience_getimages_json()
+{
+
+
+    try {
+        // open connection to MongoDB server
+        $conn = new Mongo('localhost');
+
+        // access database
+        $db = $conn->sodtest;
+
+        // access collection
+        $collection = $db->items;
+
+        $pageNumber = strip_tags($_GET['page']); // get the requested page
+        $nPerPage = 1000;
+        $cursor = $collection->find()->skip(($pageNumber - 1) * $nPerPage)->limit($nPerPage);
+
+
+        $i = 0;
+
+        $fileURLs = array();
+        foreach ($cursor as $obj) {
+
+
+            $fileURLs[] = array("id" => $obj['id'], "url" => trim($obj['url']));
+            $i++;
+        }
+        echo json_encode($fileURLs);
+        $conn->close();
+    } catch (MongoConnectionException $e) {
+        die('Error connecting to MongoDB server');
+    } catch (MongoException $e) {
+        die('Error: ' . $e->getMessage());
+    }
+}
+
+function drupalscience_form()
+{
+    $modulepath = drupal_get_path("module", "drupalscience");
+    drupal_add_css($modulepath . '/extjs-4.0.0-src/resources/css/ext-all.css');
+    drupal_add_css($modulepath . '/css/example.css');
+    drupal_add_css($modulepath . '/data-view.css');
+    drupal_add_js($modulepath . '/custom.js');
+    drupal_add_js($modulepath . '/extjs-4.0.0-src/ext-all.js');
+    drupal_add_js($modulepath . '/data-view.js');
+    drupal_add_js($modulepath . '/DragSelector.js');
+    drupal_add_js($modulepath . '/LabelEditor.js');
+    drupal_add_js($modulepath . '/lightbox.js');
+    drupal_add_css($modulepath . '/tabs.css');
+    drupal_add_js($modulepath . '/tabs.js');
+    $form['imagegalleryviewport'] = array(
+        '#type' => 'markup',
+        '#prefix' => '<div id="gallery"></div>',
+        '#value' => ' ',
+    );
+    return $form;
+}
+
+
+function drupalscience_savenode()
+{
+
+
+    try {
+        // open connection to MongoDB server
+        $conn = new Mongo('localhost');
+
+        // access database
+        $db = $conn->sodtest;
+
+        // access collection
+        $collection = $db->items;
+
+        $collection->remove();
+
+
+        $i = 0;
+        $file_handle = fopen(drupal_get_path('module', 'drupalscience') . '/field_revision_field_imagelink.txt', "r");
+        while (!feof($file_handle)) {
+            $line = trim(fgets($file_handle));
+
+            if ($line == "") {
+                continue;
+            }
+
+
+            $line = str_replace("http://himal.itsc.uah.edu", "ftp://ghrc.nsstc.nasa.gov", $line);
+
+
+            $item = array("url" => trim($line), "type" => "node", "id" => $i, "md5" => md5(trim($line)));
+
+            $folderList = explode("/", trim($line));
+            for ($f = 0; $f < count($folderList); $f++) {
+                $item['f' . $f] = $folderList[$f];
+            }
+
+            $item['lastIndex'] = $f;
+            $item['filename'] = basename(trim($line));
+
+            $collection->insert($item);
+
+
+            echo $i++;
+
+        }
+
+        $conn->close();
+    } catch (MongoConnectionException $e) {
+        die('Error connecting to MongoDB server');
+    } catch (MongoException $e) {
+        die('Error: ' . $e->getMessage());
+    }
+}
+
+function drupalscience_getnodes()
+{
+
+    drupalscience_initMongo();
+
+    global $collection;
+    global $conn;
+
+    $urlPart = $_GET['node'];
+    if ($urlPart == "") {
+        $urlPart = "browse";
+        $addCounter = 4;
+    } else {
+        $addCounter = 5;
+    }
+
+    $t_urlPart = $urlPart;
+    $response = drupalscience_checkCache($t_urlPart);
+
+    if ($response['success'] == TRUE) {
+        echo $response['result'];
+        return;
+    }
+
+    $url_parts = explode("/", trim($urlPart));
+    $urlPart = (count($url_parts) + ($addCounter - 1)) . "*" . $url_parts[count($url_parts) - 1];
+    $urlParts = explode("*", trim($urlPart));
+
+
+    $searchQuery = array();
+    for ($i = 0; $i < count($url_parts); $i++) {
+        $searchQuery["f" . ($i + $addCounter)] = $url_parts[$i];
+    }
+
+
+    if (isset($_GET['start']) && isset($_GET['limit'])) {
+
+        $pageNumber = $_GET['page'];
+        $start = $_GET['start'];
+        $nPerPage = $_GET['limit'];
+
+    }
+
+    if (!isset($_GET['tree'])) {
+        $cursor = $collection->find($searchQuery)->skip($start)->limit($nPerPage);
+    } else {
+        $cursor = $collection->find($searchQuery);
+    }
+    $i = 0;
+    global $base_url;
+    global $base_path;
+
+    $childFolders = array();
+    $t_folder = array();
+    $totalcount = $cursor->count();
+    foreach ($cursor as $obj) {
+        if (trim($obj['url']) !== "") {
+
+            $prefix = "";
+            for ($i = 5; $i <= $urlParts[0]; $i++) {
+                $prefix .= $obj["f" . $i];
+                if ($i !== $urlParts[0]) {
+                    $prefix .= "/";
+                }
+
+            }
+            if (!isset($t_folder[$obj["f" . ($urlParts[0] + 1)]])) {
+                if ($obj['lastIndex'] == ($urlParts[0] + 3)) {
+
+                    $childFolders[] = array("text" => $obj["f" . ($urlParts[0] + 1)], "id" => $prefix . $obj["f" . ($urlParts[0] + 1)], "cls" => "folder");
+                } else if ($obj['lastIndex'] == ($urlParts[0] + 2)) {
+                    //for images
+                    if (!isset($_GET['tree'])) {
+
+                        $t_url = $obj['url'];
+                        $search = str_replace('ftp://', '', $t_url);
+                        if (!file_exists($base_path . "/sites/default/files/browsethumbnail/" . $search)) {
+                            $basefilename = basename($t_url);
+                            $pathToImages = str_replace($basefilename, '', $t_url);
+                            $thumbnail = str_replace("ftp://", '', $pathToImages);
+                            $pathToThumbs = $base_path . "/sites/default/files/browsethumbnail/";
+
+
+                            @mkdir($base_path . "/sites/default/files/browsethumbnail/" . $thumbnail, true);
+
+                            drupalscience_createThumbs($pathToImages, $pathToThumbs, 100, $basefilename);
+                        }
+
+                        $childFolders[] = array('name' => $obj["f" . ($urlParts[0] + 1)],
+                            'url' => $t_url, 'url_thumb' => $base_url . '/sites/default/files/browsethumbnail/' . $basefilename,
+                        );
+                    }
+                } else {
+                    $childFolders[] = array("text" => $obj["f" . ($urlParts[0] + 1)], "id" => $prefix . $obj["f" . ($urlParts[0] + 1)], "cls" => "folder");
+                }
+                $t_folder[$obj["f" . ($urlParts[0] + 1)]] = array();
+            }
+        }
+        $i++;
+
+    }
+
+
+    if (!isset($_GET['tree'])) {
+
+        $json_result = json_encode(array("success" => true, "total" => $totalcount, "images" => $childFolders));
+        drupalscience_saveQuery($t_urlPart, $json_result);
+        echo $json_result;
+    } else {
+        $json_result = json_encode($childFolders);
+        drupalscience_saveQuery($t_urlPart, $json_result);
+        echo $json_result;
+    }
+
+
+    // disconnect from server
+    $conn->close();
+}
+
+function drupalscience_checkCache($query)
+{
+
+
+    global $collectionCache;
+
+
+    $cursor = $collectionCache->find(array('query' => $query));
+
+    $count = $cursor->count();
+
+    if ($count == 0) {
+        return array("success" => FALSE);
+    } else {
+        foreach ($cursor as $obj) {
+            return array("success" => TRUE, "result" => $obj['result']);
+        }
+    }
+}
+
+function drupalscience_saveQuery($query, $result)
+{
+    global $collectionCache;
+
+    $item = array("query" => $query, "result" => $result);
+
+    $collectionCache->insert($item);
+}
+
+function drupalscience_getimages()
+{
+    drupalscience_initMongo();
+
+    global $collection;
+    global $conn;
+
+
+    $urlPart = $_GET['node'];
+    if ($urlPart == "") {
+        $urlPart = "browse";
+        $addCounter = 4;
+    } else {
+        $addCounter = 5;
+    }
+    $url_parts = explode("/", trim($urlPart));
+    $urlPart = trim((count($url_parts) + ($addCounter - 1)) . "*" . $url_parts[count($url_parts) - 1]);
+
+
+    $response = drupalscience_checkCache($urlPart . $_GET['start'] . $_GET['limit']);
+
+    if ($response['success'] == TRUE && $response['result'] !== "[]") {
+        echo $response['result'];
+        return;
+    }
+
+
+    $urlParts = explode("*", ($urlPart));
+
+    $searchQuery = array();
+    for ($i = 0; $i < count($url_parts); $i++) {
+        $searchQuery["f" . ($i + $addCounter)] = $url_parts[$i];
+    }
+
+
+    if (isset($_GET['start']) && isset($_GET['limit'])) {
+
+        $pageNumber = $_GET['page'];
+        $start = $_GET['start'];
+        $nPerPage = $_GET['limit'];
+
+    } else {
+        $start = 0;
+        $nPerPage = 1000;
+    }
+
+
+    $cursor = $collection->find($searchQuery)->skip($start)->limit($nPerPage);
+
+    $count = $cursor->count();
+
+
+    $i = 0;
+    global $base_url;
+    global $base_path;
+    $roottree = array();
+    $childFolders = array();
+    $t_folder = array();
+    $totalcount = $cursor->count();
+    foreach ($cursor as $obj) {
+
+        if (trim($obj['url']) !== "") {
+
+
+            $t_url = $obj['url'];
+
+            $basefilename = basename($t_url);
+
+
+            $pathToImages = $_SERVER["DOCUMENT_ROOT"] . $base_path . "sites/default/files/browsecache/";
+            $pathToThumbs = $_SERVER["DOCUMENT_ROOT"] . $base_path . "/sites/default/files/browsethumbnail/";
+
+            @mkdir($pathToImages, true);
+            @mkdir($pathToThumbs, true);
+
+            if (!file_exists($pathToImages . $basefilename)) {
+                drupalscience_copyftp($t_url, $pathToImages . $basefilename);
+            }
+
+            if (!file_exists($pathToThumbs . $basefilename)) {
+                drupalscience_createThumbs($pathToImages, $pathToThumbs, 100, $basefilename);
+            }
+
+
+            $childFolders[] = array("instrument" => $obj["f5"], "original" => $t_url, 'name' => $basefilename,
+                'url' => $base_url . '/sites/default/files/browsecache/' . $basefilename, 'url_thumb' => $base_url . '/sites/default/files/browsethumbnail/' . $basefilename,
+            );
+
+
+            $t_folder[$obj["f" . ($urlParts[0] + 1)]] = array();
+        }
+        $i++;
+
+    }
+
+
+    $json_result = json_encode(array("success" => true, "total" => $totalcount, "images" => $childFolders));
+    drupalscience_saveQuery($urlPart . $_GET['start'] . $_GET['limit'], $json_result);
+    echo $json_result;
+
+    $conn->close();
+}
+
+function drupalscience_createThumbs($pathToImages, $pathToThumbs, $thumbWidth, $fname)
+{
+
+    $info = pathinfo($pathToImages . $fname);
+
+    $img_type = strtolower($info['extension']);
+    if ($img_type == 'jpg' || $img_type == 'png' || $img_type == 'gif') {
+
+        switch ($img_type) {
+            case "jpeg":
+
+                $img = imagecreatefromjpeg("{$pathToImages}{$fname}");
+                break;
+            case "png":
+
+                $img = @imagecreatefrompng("{$pathToImages}{$fname}");
+                break;
+            case "x-png":
+
+                $img = @imagecreatefrompng("{$pathToImages}{$fname}");
+                break;
+            case "gif":
+
+                $img = @imagecreatefromgif("{$pathToImages}{$fname}");
+                break;
+        }
+
+
+        $width = imagesx($img);
+        $height = imagesy($img);
+
+
+        $new_width = $thumbWidth;
+        $new_height = floor($height * ($thumbWidth / $width));
+
+
+        $tmp_img = imagecreatetruecolor($new_width, $new_height);
+
+
+        imagecopyresized($tmp_img, $img, 0, 0, 0, 0, $new_width, $new_height, $width, $height);
+
+
+        switch ($img_type) {
+            case "jpeg":
+
+
+                imagejpeg($tmp_img, "{$pathToThumbs}{$fname}");
+                break;
+            case "png":
+
+
+                imagepng($tmp_img, "{$pathToThumbs}{$fname}");
+                break;
+            case "x-png":
+
+
+                imagepng($tmp_img, "{$pathToThumbs}{$fname}");
+                break;
+            case "gif":
+
+
+                imagegif($tmp_img, "{$pathToThumbs}{$fname}");
+                break;
+        }
+    }
+}
+
+function drupalscience_findAndFilterNodes($json_a, $totalcount, $threshold, $year, $month, $day)
+{
+    global $collection;
+    global $conn;
+    drupalscience_initMongo();
+    $idsToMatch = array();
+    $i = 0;
+    $query = "";
+    $scores = array();
+
+    foreach ($json_a as $key => $val) {
+
+        $score = $val['score'];
+        $idurl = urldecode($val['url']);
+        $id = basename($idurl);
+
+        if ($score >= $threshold) {
+            $idsToMatch[] = $id;
+            $scores["$id"] = $score;
+        }
+        $i++;
+
+        $query .= "$i";
+
+    }
+
+
+    $cursor = $collection->find(array("filename" => array('$in' => $idsToMatch)));
+
+    global $base_url;
+
+
+    $childFolders = array();
+
+    foreach ($cursor as $obj) {
+
+
+        if (trim($obj['url']) !== "") {
+
+            $t_url = $obj['url'];
+            $basefilename = basename($t_url);
+            $returnedData = drupalscience_parseFileName($basefilename);
+
+            $returnedyear = $returnedData["year"];
+            $returnedmonth = $returnedData["month"];
+            $returnedday = $returnedData["day"];
+
+            global $base_path;
+            $setadd = true;
+            $pathToImages = $_SERVER["DOCUMENT_ROOT"] . $base_path . "sites/default/files/browsecache/";
+            $pathToThumbs = $_SERVER["DOCUMENT_ROOT"] . $base_path . "/sites/default/files/browsethumbnail/";
+
+            if (!file_exists($pathToImages . $basefilename)) {
+                drupalscience_copyftp($t_url, $pathToImages . $basefilename);
+            }
+
+            if (!file_exists($_SERVER["DOCUMENT_ROOT"] . $base_path . "/sites/default/files/browsethumbnail/" . $basefilename)) {
+                drupalscience_createThumbs($pathToImages, $pathToThumbs, 100, $basefilename);
+            }
+
+            if ($year != "" && $returnedyear != $year) {
+                $setadd = false;
+
+            }
+
+            if ($month != "" && $returnedmonth != $month) {
+                $setadd = false;
+
+            }
+            if ($day != "" && $returnedday != $day) {
+                $setadd = false;
+
+            }
+
+
+            if ($setadd === true) {
+
+                $childFolders[] = array("score" => $scores[$basefilename], "original" => $t_url, 'name' => $basefilename,
+                    'url' => $base_url . '/sites/default/files/browsecache/' . $basefilename, 'url_thumb' => $base_url . '/sites/default/files/browsethumbnail/' . $basefilename
+                );
+
+            }
+        }
+
+
+    }
+    $resultarray = array("success" => true, "total" => $totalcount, "images" => $childFolders);
+
+    $conn->close();
+
+    return $resultarray;
+
+
+}
+
+function drupalscience_getservice()
+{
+    drupalscience_initMongo();
+
+    global $collectionforResults;
+    global $conn;
+    $sessionid = session_id();
+    if ($sessionid == '')
+        session_start();
+
+    $url = $_GET['file'];
+
+    if (isset($_GET['year'])) {
+        $getyear = $_GET['year'];
+    } else {
+        $getyear = "";
+    }
+
+    if (isset($_GET['month'])) {
+        $getmonth = $_GET['month'];
+    } else {
+        $getmonth = "";
+    }
+    if (isset($_GET['day'])) {
+        $getday = $_GET['day'];
+    } else {
+        $getday = "";
+    }
+    $threshold = $_GET['threshold'];
+
+    $histogram = $_GET['histo'];
+    $id = $sessionid . '-' . $url;
+    $json = "";
+
+    $cursor = $collectionforResults->find(array('id' => $id));
+    $totalcount = $cursor->count();
+
+    $json = trim(file_get_contents($url));
+
+
+    $lastChar = substr($json, strlen($json) - 1);
+
+    if ($lastChar !== "]") {
+        $json = $json . "]";
+    }
+
+    $json_a = json_decode($json, true);
+    $matchedItems = drupalscience_findAndFilterNodes($json_a, $totalcount, $threshold, $getyear, $getmonth, $getday);
+    $images = $matchedItems["images"];
+    $totalcount = count($images);
+
+    if ($histogram == "false") {
+        if (isset($_GET['start']) && isset($_GET['limit'])) {
+
+            $pageNumber = $_GET['page'];
+            $start = $_GET['start'];
+            $nPerPage = $_GET['limit'];
+
+            $images = array_slice($images, $start, $nPerPage);
+        } else {
+            $images = array_slice($images, 0, 25);
+        }
+
+        $matchedItems["total"] = $totalcount;
+        $matchedItems["images"] = $images;
+        echo json_encode($matchedItems);
+    } else {
+        $yearCount = array();
+        $monthCount = array();
+        $dayCount = array();
+        foreach ($images as $key => $val) {
+
+
+            $url = $val['url'];
+            $returnedData = drupalscience_parseFileName($url);
+
+            $returnedyear = $returnedData["year"];
+            $returnedmonth = $returnedData["month"];
+            $returnedday = $returnedData["day"];
+            // sort($returnedyear);
+            if ($getyear == "" && $getmonth == "") {
+
+                if ($yearCount[$returnedyear] == NULL) {
+                    $yearCount[$returnedyear] = 1;
+                } else {
+                    $yearCount[$returnedyear] = $yearCount[$returnedyear] + 1;
+
+                }
+                $chartJSON = array();
+                foreach ($yearCount as $year => $value) {
+                    $chartJSON[] = array("year" => $year, "countoffiles" => $value);
+                }
+            } elseif ($getyear != "" && $getmonth == "") {
+
+
+                if ($monthCount[$returnedmonth] == NULL) {
+                    $monthCount[$returnedmonth] = 1;
+                } else {
+                    $monthCount[$returnedmonth] = $monthCount[$returnedmonth] + 1;
+
+                }
+
+                $chartJSON = array();
+
+                foreach ($monthCount as $year => $value) {
+
+                    $chartJSON[] = array("year" => $year, "countoffiles" => $value);
+                }
+            } else if ($getyear != "" && $getmonth != "") {
+                if ($dayCount[$returnedday] == NULL) {
+                    $dayCount[$returnedday] = 1;
+                } else {
+                    $dayCount[$returnedday] = $dayCount[$returnedday] + 1;
+
+                }
+
+                $chartJSON = array();
+
+                foreach ($dayCount as $year => $value) {
+
+
+                    $chartJSON[] = array("year" => $year, "countoffiles" => $value);
+
+                }
+            }
+
+        }
+        sort($chartJSON);
+        echo json_encode($chartJSON);
+        return;
+    }
+}
+ 
